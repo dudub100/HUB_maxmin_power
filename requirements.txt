@@ -2,4 +2,3 @@ numpy
 mpmath
 pandas
 streamlit
-plotly
