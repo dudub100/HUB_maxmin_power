@@ -115,7 +115,7 @@ def optimize_network(tail_angles, tail_distances, rain_fade, target_C2I, antenna
         best_idx = np.argmax(spare)
         worst_idx = np.argmin(spare)
         
-        step = 0.5 if is_uplink else 0.05
+        step = 0.05 if is_uplink else 0.05
         tx_power[best_idx] -= step * minMax
         tx_power[worst_idx] += step * minMax
         
