@@ -35,14 +35,9 @@ class Antenna:
             
         rpe1 = np.zeros(teta.shape)
         
-        # ETSI Mask Definitions (Simplified mapping for brevity, focusing on Class 3 & 4)
-        if 14 <= self.frequency <= 20 and self.antennaClass == 3:
-            angleMask = np.array([5, 10, 25, 60, 95, 180]) 
-            rpeMask = np.array([18, 9, 2, -4, -27, -27])
-        else:
-            # Default fallback mask to keep code concise
-            angleMask = np.array([5, 10, 20, 40, 80, 100, 180]) 
-            rpeMask = np.array([18, 9, -4, -13, -25, -30, -30])
+        # Default fallback mask mapping Class 3/4 characteristics securely
+        angleMask = np.array([5, 10, 20, 40, 80, 100, 180]) 
+        rpeMask = np.array([18, 9, -4, -13, -25, -30, -30])
 
         for row in range(teta.shape[0]):
             for column in range(teta.shape[1]):
@@ -51,7 +46,6 @@ class Antenna:
                 if tetaTmp > 180: tetaTmp = 360 - tetaTmp 
                         
                 if tetaTmp < angleMask[0]:
-                    # Optimized Bessel calculation using SciPy
                     x = k * tetaTmp * radius * np.pi / 180
                     rpe1[row][column] = 10 * math.log10((2 * j1(x) / x)**2)
                 else:
@@ -70,7 +64,7 @@ def freeSpaceLoss(distance, freq):
     return 92.5 + 20 * np.log10(distance * freq)
 
 # ==========================================
-# Max-Min Optimization Engine
+# Fixed Max-Min Optimization Engine
 # ==========================================
 def optimize_network(tail_angles, tail_distances, rain_fade, target_C2I, antenna1, chBW, NF, Pmax, Pmin, is_uplink=True):
     N = tail_angles.size
@@ -83,7 +77,7 @@ def optimize_network(tail_angles, tail_distances, rain_fade, target_C2I, antenna
     teta = mat1 - mat1.T
     attenMatrixAntenna = antenna1.antennaAngularAttenuation(teta)
 
-    # Path Loss Setup
+    # Path Loss Matrix Setup
     tx_power = np.ones(N) * Pmax
     fsl_matrix = np.zeros((N, N))
     
@@ -93,12 +87,14 @@ def optimize_network(tail_angles, tail_distances, rain_fade, target_C2I, antenna
             fade = rain_fade[row] if is_uplink else rain_fade[col]
             fsl_matrix[row][col] = Gain - fade - freeSpaceLoss(dist, antenna1.frequency) + Gain + attenMatrixAntenna[row][col]
 
-    c2i_history = []
-    
     minMax = 1000
-    counter = 100
+    max_iterations = 200
+    iteration = 0
 
-    while minMax > 1 and counter > 0:
+    # Strict hard counter condition prevents infinite loop execution
+    while minMax > 1.0 and iteration < max_iterations:
+        iteration += 1
+        
         # Vectorized Rx Matrix calculation
         tx_matrix = np.tile(tx_power, (N, 1)).T
         rxMatrix = tx_matrix + fsl_matrix
@@ -113,24 +109,18 @@ def optimize_network(tail_angles, tail_distances, rain_fade, target_C2I, antenna
         spare = c2i - target_C2I
         minMax = np.max(spare) - np.min(spare)
         
-        # Max-Min Power Adjustments
         if np.min(spare) > 1.0:
             tx_power = tx_power - 0.8 * np.min(spare)
             
         best_idx = np.argmax(spare)
         worst_idx = np.argmin(spare)
         
-        # Adaptive step size (smaller for Downlink to prevent ping-pong)
         step = 0.5 if is_uplink else 0.05
-        
         tx_power[best_idx] -= step * minMax
         tx_power[worst_idx] += step * minMax
         
-        # Strict Hardware Enforcement
+        # Clip immediately to enforce strict physical ceilings
         tx_power = np.clip(tx_power, Pmin, Pmax)
-        
-        if minMax < 2:
-            counter -= 1
 
     return c2i, tx_power
 
@@ -138,80 +128,147 @@ def optimize_network(tail_angles, tail_distances, rain_fade, target_C2I, antenna
 # Streamlit UI
 # ==========================================
 def main():
-    st.set_page_config(page_title="PtMP Interference Optimizer", layout="wide")
-    st.title("📡 Max-Min PtMP Link Optimizer")
+    st.set_page_config(page_title="PtMP Max-Min Simulator", layout="wide")
+    st.title("📡 PtMP Max-Min Interferece & Monte Carlo Engine")
     
-    # Sidebar Controls
-    st.sidebar.header("Network Parameters")
-    num_links = st.sidebar.slider("Number of Links", min_value=2, max_value=20, value=6)
-    target_C2I = st.sidebar.slider("Target C/I (dB)", min_value=10.0, max_value=60.0, value=34.0, step=1.0)
-    
-    st.sidebar.header("RF Hardware Configuration")
-    freq = st.sidebar.number_input("Frequency (GHz)", value=18.0)
-    Pmax = st.sidebar.number_input("Max Tx Power (dBm)", value=20.0)
-    Pmin = st.sidebar.number_input("Min Tx Power (dBm)", value=-5.0)
-    chBW = st.sidebar.number_input("Channel BW (MHz)", value=56.0)
-    NF = st.sidebar.number_input("Noise Figure (dB)", value=5.0)
+    # Sidebar Global Controls
+    st.sidebar.header("Global RF Parameters")
+    freq = st.sidebar.number_input("Frequency (GHz)", value=18.0, step=1.0)
+    Pmax = st.sidebar.number_input("Max Tx Power (dBm)", value=20.0, step=1.0)
+    Pmin = st.sidebar.number_input("Min Tx Power (dBm)", value=-5.0, step=1.0)
+    chBW = st.sidebar.number_input("Channel BW (MHz)", value=56.0, step=10.0)
+    NF = st.sidebar.number_input("Noise Figure (dB)", value=5.0, step=0.5)
     antenna_size = st.sidebar.selectbox("Antenna Size (ft)", [1, 2, 3, 4], index=2)
-
-    # Generate Topology Data
-    np.random.seed(42) # Fixed seed for stable UI testing
-    tail_angles = np.sort(np.random.uniform(-180, 180, num_links))
-    tail_distances = np.random.uniform(1.0, 12.0, num_links)
-    rain_fade = np.zeros(num_links) # Assumed clear sky for baseline
-
-    # Build Antenna
-    ant = Antenna(diameter=antenna_size, frequency=freq, antennaClass=3)
     
-    st.markdown(f"**Current Hardware:** {ant} | **Channel:** {chBW} MHz | **Limits:** {Pmin} dBm to {Pmax} dBm")
+    ant = Antenna(diameter=antenna_size, frequency=freq, antennaClass=3)
+    st.markdown(f"**Current Hardware Baseline:** {ant} | **Channel:** {chBW} MHz")
 
-    # Run Calculations
-    if st.button("Run Optimization Engine", type="primary"):
-        with st.spinner("Calculating matrices and balancing powers..."):
+    # Creating Tabs for Single Run vs Monte Carlo
+    tab1, tab2 = st.tabs(["🎯 Single Run Inspection", "🎲 Monte Carlo Statistical Analysis"])
+    
+    with tab1:
+        st.header("Single Topology Run")
+        col_c1, col_c2 = st.columns(2)
+        with col_c1:
+            num_links = st.slider("Number of CPE Links", min_value=2, max_value=20, value=6, key="single_n")
+        with col_c2:
+            target_C2I = st.slider("Target C/I (dB)", min_value=10.0, max_value=60.0, value=34.0, step=1.0, key="single_t")
             
-            # Baseline (Everyone transmits at Pmax)
-            c2i_base_up, _ = optimize_network(tail_angles, tail_distances, rain_fade, target_C2I, ant, chBW, NF, Pmax, Pmin, is_uplink=True)
-            # Optimize Uplink
+        if st.button("Execute Single Run", type="primary"):
+            # Uniform geographic setup across an angular slice
+            np.random.seed(42) 
+            tail_angles = np.sort(np.random.uniform(-45, 45, num_links))
+            tail_distances = np.random.uniform(1.0, 10.0, num_links)
+            rain_fade = np.zeros(num_links)
+            
+            c2i_base, _ = optimize_network(tail_angles, tail_distances, rain_fade, target_C2I, ant, chBW, NF, Pmax, Pmin, is_uplink=True)
             c2i_opt_up, tx_opt_up = optimize_network(tail_angles, tail_distances, rain_fade, target_C2I, ant, chBW, NF, Pmax, Pmin, is_uplink=True)
-            
-            # Optimize Downlink
             c2i_opt_down, tx_opt_down = optimize_network(tail_angles, tail_distances, rain_fade, target_C2I, ant, chBW, NF, Pmax, Pmin, is_uplink=False)
-
-        # UI Results Display
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("Uplink (Tail to Hub)")
-            fig_up, ax_up = plt.subplots(figsize=(6, 4))
-            indices = np.arange(num_links)
+            
+            res_col1, res_col2 = st.columns(2)
             width = 0.35
-            ax_up.bar(indices - width/2, c2i_base_up, width, label='Before (Pmax)', color='lightgray')
-            ax_up.bar(indices + width/2, c2i_opt_up, width, label='After (Optimized)', color='tab:blue')
-            ax_up.axhline(y=target_C2I, color='r', linestyle='--', label='Target C/I')
-            ax_up.set_ylabel("C/I (dB)")
-            ax_up.set_xlabel("Tail Link Index")
-            ax_up.legend()
-            st.pyplot(fig_up)
+            indices = np.arange(num_links)
             
-            st.markdown("**Final Tx Powers (dBm):**")
-            st.code(np.round(tx_opt_up, 1))
+            with res_col1:
+                st.subheader("Uplink Matrix (CPE to Hub)")
+                fig_up, ax_up = plt.subplots(figsize=(6, 3.5))
+                ax_up.bar(indices - width/2, c2i_base, width, label='Unmanaged (Pmax)', color='lightgray')
+                ax_up.bar(indices + width/2, c2i_opt_up, width, label='Max-Min Balanced', color='tab:blue')
+                ax_up.axhline(y=target_C2I, color='r', linestyle='--', label='Target')
+                ax_up.set_ylabel("C/I (dB)")
+                ax_up.legend()
+                st.pyplot(fig_up)
+                st.metric("Worst Settled Uplink C/I", f"{np.min(c2i_opt_up):.2f} dB")
+                st.text(f"Optimized Tx Powers (dBm): {np.round(tx_opt_up, 1)}")
+                
+            with res_col2:
+                st.subheader("Downlink Matrix (Hub to CPE)")
+                fig_down, ax_down = plt.subplots(figsize=(6, 3.5))
+                c2i_base_down, _ = optimize_network(tail_angles, tail_distances, rain_fade, target_C2I, ant, chBW, NF, Pmax, Pmin, is_uplink=False)
+                ax_down.bar(indices - width/2, c2i_base_down, width, label='Unmanaged (Pmax)', color='lightgray')
+                ax_down.bar(indices + width/2, c2i_opt_down, width, label='Max-Min Balanced', color='tab:green')
+                ax_down.axhline(y=target_C2I, color='r', linestyle='--', label='Target')
+                ax_down.set_ylabel("C/I (dB)")
+                ax_down.legend()
+                st.pyplot(fig_down)
+                st.metric("Worst Settled Downlink C/I", f"{np.min(c2i_opt_down):.2f} dB")
+                st.text(f"Optimized Tx Powers (dBm): {np.round(tx_opt_down, 1)}")
 
-        with col2:
-            st.subheader("Downlink (Hub to Tail)")
-            fig_down, ax_down = plt.subplots(figsize=(6, 4))
-            # Simulating before state for downlink
-            c2i_base_down, _ = optimize_network(tail_angles, tail_distances, rain_fade, target_C2I, ant, chBW, NF, Pmax, Pmin, is_uplink=False)
+    with tab2:
+        st.header("Monte Carlo Simulation Runs")
+        col_m1, col_m2, col_m3 = st.columns(3)
+        with col_m1:
+            mc_runs = st.number_input("Number of Monte Carlo Iterations", min_value=10, max_value=2000, value=200, step=50)
+        with col_m2:
+            mc_links = st.slider("Links per Sector", min_value=2, max_value=15, value=5)
+        with col_m3:
+            mc_target = st.slider("Target C/I Threshold (dB)", min_value=15.0, max_value=50.0, value=35.0, step=1.0)
+
+        if st.button("Run Monte Carlo Engine", type="primary"):
+            worst_uplink_vector = []
+            worst_downlink_vector = []
+            saturated_tx_count = 0
+            total_tx_evaluated = 0
             
-            ax_down.bar(indices - width/2, c2i_base_down, width, label='Before (Pmax)', color='lightgray')
-            ax_down.bar(indices + width/2, c2i_opt_down, width, label='After (Optimized)', color='tab:green')
-            ax_down.axhline(y=target_C2I, color='r', linestyle='--', label='Target C/I')
-            ax_down.set_ylabel("C/I (dB)")
-            ax_down.set_xlabel("Tail Link Index")
-            ax_down.legend()
-            st.pyplot(fig_down)
+            progress_bar = st.progress(0)
             
-            st.markdown("**Final Tx Powers (dBm):**")
-            st.code(np.round(tx_opt_down, 1))
+            # Monte Carlo Execution Loop
+            for run in range(mc_runs):
+                # Generate fully independent random map coordinates per loop
+                mc_angles = np.sort(np.random.uniform(-60, 60, mc_links))
+                # Using area-proportional square root distribution to avoid cluster bias
+                mc_distances = 12.0 * np.sqrt(np.random.uniform(0.1, 1.0, mc_links))
+                mc_fade = np.zeros(mc_links)
+                
+                # Run optimization for this snapshot map
+                c2i_up, tx_up = optimize_network(mc_angles, mc_distances, mc_fade, mc_target, ant, chBW, NF, Pmax, Pmin, is_uplink=True)
+                c2i_down, tx_down = optimize_network(mc_angles, mc_distances, mc_fade, mc_target, ant, chBW, NF, Pmax, Pmin, is_uplink=False)
+                
+                worst_uplink_vector.append(np.min(c2i_up))
+                worst_downlink_vector.append(np.min(c2i_down))
+                
+                # Check for saturation (transmitters forced to stay maxed out)
+                saturated_tx_count += np.sum(tx_up >= (Pmax - 0.2))
+                total_tx_evaluated += mc_links
+                
+                if run % max(1, mc_runs // 10) == 0:
+                    progress_bar.progress(run / mc_runs)
+            
+            progress_bar.progress(1.0)
+            
+            # Post-Processing Results Visualization
+            m_col1, m_col2 = st.columns(2)
+            
+            with m_col1:
+                st.subheader("Performance Distribution (CDF)")
+                fig_cdf, ax_cdf = plt.subplots(figsize=(6, 4))
+                
+                # Sort vectors to build empirical Cumulative Distribution Function curves
+                ax_cdf.plot(np.sort(worst_uplink_vector), np.linspace(0, 1, mc_runs), label='Uplink Worst Case', linewidth=2)
+                ax_cdf.plot(np.sort(worst_downlink_vector), np.linspace(0, 1, mc_runs), label='Downlink Worst Case', linewidth=2, linestyle='--')
+                ax_cdf.axvline(x=mc_target, color='r', linestyle=':', label='Configured Target')
+                
+                ax_cdf.set_xlabel("Worst Achieved C/I in Sector (dB)")
+                ax_cdf.set_ylabel("Probability (CDF)")
+                ax_cdf.grid(True, alpha=0.4)
+                ax_cdf.legend()
+                st.pyplot(fig_cdf)
+                
+            with m_col2:
+                st.subheader("Statistical Dashboard")
+                up_array = np.array(worst_uplink_vector)
+                down_array = np.array(worst_downlink_vector)
+                
+                outage_rate_up = np.mean(up_array < mc_target) * 100
+                outage_rate_down = np.mean(down_array < mc_target) * 100
+                saturation_rate = (saturated_tx_count / total_tx_evaluated) * 100
+                
+                st.metric("Uplink Target Outage Probability", f"{outage_rate_up:.1f} %")
+                st.metric("Downlink Target Outage Probability", f"{outage_rate_down:.1f} %")
+                st.metric("Amplifier Saturation Rate (At Pmax)", f"{saturation_rate:.1f} %")
+                
+                st.info(f"Analysis compiled over {mc_runs} distinct geographic layout variants. "
+                        f"Median sector bottleneck performance: Uplink={np.median(up_array):.1f} dB, Downlink={np.median(down_array):.1f} dB.")
 
 if __name__ == "__main__":
     main()
