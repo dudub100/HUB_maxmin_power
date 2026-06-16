@@ -1,14 +1,13 @@
-# -*- coding: utf-8 -*-
-
+import streamlit as st
 import numpy as np
 import math
+import matplotlib.pyplot as plt
+import random as rand
 import mpmath
-import pandas as pd
-import streamlit as st
 
-# =================
-# Helper Functions & Classes
-# =================
+# ==========================================
+# Core Classes and Functions (From original)
+# ==========================================
 
 class Antenna:
     def __init__(self, diameter=1, frequency=18, antennaClass=4):
@@ -29,8 +28,6 @@ class Antenna:
         return 70 * lambda1 / (self.diameter * 0.305)
     
     def antennaAngularAttenuation(self, teta):
-        # teta is a matrix in degrees
-        # Function returns the attenuation of the antenna at teta degrees from center
         Lambda1 = 300E6 / (self.frequency * 1E9)
         k = 2 * np.pi / Lambda1
         radius = self.diameter / 2
@@ -44,73 +41,63 @@ class Antenna:
         if self.frequency >= 3 and self.frequency <= 14 and self.antennaClass == 4:
             angleMask = np.array([5, 10, 20, 50, 70, 85, 105, 180]) 
             rpeMask = np.array([16, 5, -7,-18, -20, -24, -30, -30])
-
         # 3-14GHz Class 3
         elif self.frequency >= 3 and self.frequency <= 14 and self.antennaClass == 3:
             angleMask = np.array([5, 20, 70, 100, 180]) 
             rpeMask = np.array([20, 8, -5,-25, -25])
-    
         # 14-20GHz Class 4
         elif self.frequency >= 14 and self.frequency <= 20 and self.antennaClass == 4:
             angleMask = np.array([5, 10, 20, 40, 80, 100, 180]) 
             rpeMask = np.array([18, 9, -4,-13, -25, -30, -30])
-
         # 14-20GHz Class 3
         elif self.frequency >= 14 and self.frequency <= 20 and self.antennaClass == 3:
             angleMask = np.array([5, 10, 25, 60, 95, 180]) 
             rpeMask = np.array([18, 9, 2,-4, -27, -27])
-            
         # 20-24GHz Class 4
         elif self.frequency >= 20 and self.frequency <= 24 and self.antennaClass == 4:
             angleMask = np.array([5, 10, 20, 40, 80, 100, 180]) 
             rpeMask = np.array([18, 9, -4,-13, -25, -30, -30])
-
         # 20-24GHz Class 3
         elif self.frequency >= 20 and self.frequency <= 24 and self.antennaClass == 3:
             angleMask = np.array([5, 10, 20, 40, 50, 100, 180]) 
             rpeMask = np.array([20, 12, 7,3, 0, -23, -23])
-            
         # 24-30GHz Class 4
         elif self.frequency >= 24 and self.frequency <= 30 and self.antennaClass == 4:
             angleMask = np.array([5, 10, 20, 40, 80, 100, 180]) 
             rpeMask = np.array([18, 9, -4,-13, -25, -30, -30])
-
         # 24-30GHz Class 3
         elif self.frequency >= 24 and self.frequency <= 30 and self.antennaClass == 3:
             angleMask = np.array([5, 20, 55, 100, 180]) 
             rpeMask = np.array([20, 5, 0,-23, -25])
-            
         # 30-47GHz Class 4
         elif self.frequency >= 30 and self.frequency <= 47 and self.antennaClass == 4:
             angleMask = np.array([5, 10, 20, 40, 90, 180]) 
             rpeMask = np.array([12, 5, -4,-13, -24, -24])
-
         # 30-47GHz Class 3
         elif self.frequency >= 30 and self.frequency <= 47 and self.antennaClass == 3:
             angleMask = np.array([5, 10, 15, 20, 50, 50, 65, 75, 90, 180]) 
             rpeMask = np.array([16, 9, 5,0, -7, -8, -10, -10, -17, -17])
-        
         # 71-80GHz Class 3 
         elif self.frequency >= 70 and self.frequency <= 90 and self.antennaClass == 3:
             angleMask = np.array([5, 10, 20, 50, 70, 90, 180]) 
             rpeMask = np.array([16, 9, 1, -1, -4, -17, -17])
-        
-        # Default fallback
         else:
-            angleMask = np.array([5, 10, 20, 50, 70, 90, 180]) 
-            rpeMask = np.array([16, 9, 1, -1, -4, -17, -17])
-
+            # Fallback
+            angleMask = np.array([5, 180])
+            rpeMask = np.array([10, -30])
+    
         for row in range(teta.shape[0]):
             for column in range(teta.shape[1]):
                 tetaTmp = np.abs(teta[row][column])
                 if tetaTmp == 0:
                     tetaTmp = 0.0001
-                    
                 if tetaTmp > 180:
                     tetaTmp = 360 - tetaTmp 
                         
                 if tetaTmp < angleMask[0]:
-                    rpe1[row][column] = 10 * math.log10((2 * mpmath.besselj(1, k * tetaTmp * radius * np.pi / 180) / (k * tetaTmp * radius * np.pi / 180))**2)
+                    val = float(mpmath.besselj(1, k * tetaTmp * radius * np.pi / 180))
+                    denom = k * tetaTmp * radius * np.pi / 180
+                    rpe1[row][column] = 10 * math.log10((2 * val / denom)**2)
                 else:
                     index1 = np.where(angleMask <= tetaTmp)[0][-1]
                     index2 = np.where(angleMask >= tetaTmp)[0][0]
@@ -121,246 +108,255 @@ class Antenna:
                             
         return rpe1
 
-
 def freeSpaceLoss(distance, freq):
-    # Freq is in GHz, distance is in Km
     return 92.5 + 20 * np.log10(distance * freq)
-    
-
-# =================
-# Optimization Logic
-# =================
 
 def reuse_app(tail_angles, tail_distances, rain_fade, target_C2I, antenna1, chBW=2000, NF=5, Pmax=15, Pmin=-2):
-    freq = antenna1.frequency
-    Gain = antenna1.gain() 
-    BW = antenna1.beamWidth() 
+    Gain = antenna1.gain()
     thermalNoise = -174 + 10 * np.log10(chBW * 1e6) + NF
-
     N = tail_angles.size
+
     mat1 = np.ones((N, 1)) * tail_angles
     mat2 = mat1.transpose()
-    teta = mat1 - mat2 
-
+    teta = mat1 - mat2
     attenMatrixAntenna = antenna1.antennaAngularAttenuation(teta)
 
-    # ------------------
-    # From Tail to Hub
-    # ------------------
-    tail_tx_power = np.ones(tail_angles.shape) * Pmax 
-
+    # --- Tail to Hub Optimization ---
+    tail_tx_power = np.ones(tail_angles.shape) * Pmax
+    
     rxMatrix = np.zeros(attenMatrixAntenna.shape)
-    for row in range(tail_angles.shape[0]):
-        for column in range(tail_angles.shape[0]):
-            fsl = freeSpaceLoss(tail_distances[row], freq)
+    for row in range(N):
+        for column in range(N):
+            fsl = freeSpaceLoss(tail_distances[row], antenna1.frequency)
             rxMatrix[row][column] = tail_tx_power[row] + Gain - rain_fade[row] - fsl + Gain + attenMatrixAntenna[row][column]
-            
-    c2i = np.zeros(rxMatrix.shape[1])
-    for column in range(rxMatrix.shape[1]):
-        noise = 0
-        for row in range(rxMatrix.shape[0]): 
-            if column == row:
-                s = rxMatrix[row][column]
-            else:
-                noise = noise + 10 ** (rxMatrix[row][column] / 10)
-        
-        noise = noise + 10**(thermalNoise / 10)
-        noiseDbm = 10 * np.log10(noise)
-        c2i[column] = s - noiseDbm
+
+    c2i = np.zeros(N)
+    for column in range(N):
+        noise = sum(10**(rxMatrix[row][column]/10) for row in range(N) if row != column)
+        noise += 10**(thermalNoise/10)
+        c2i[column] = rxMatrix[column][column] - 10 * np.log10(noise)
     
-    tail_tx_power_before_optimization = tail_tx_power.copy()
-    tail_c2i_before_optimization = c2i.copy()
+    tail_c2i_before = c2i.copy()
+    tail_power_before = tail_tx_power.copy()
 
-    minMax = 1000
-    counter1 = 100
-
-    while minMax > 1 or counter1 > 2: 
-        rxMatrix = np.zeros(attenMatrixAntenna.shape)
-        for row in range(tail_angles.shape[0]):
-            for column in range(tail_angles.shape[0]):
-                fsl = freeSpaceLoss(tail_distances[row], freq)
+    minMax, counter1 = 1000, 100
+    while minMax > 1 or counter1 > 2:
+        for row in range(N):
+            for column in range(N):
+                fsl = freeSpaceLoss(tail_distances[row], antenna1.frequency)
                 rxMatrix[row][column] = tail_tx_power[row] + Gain - rain_fade[row] - fsl + Gain + attenMatrixAntenna[row][column]
-            
-        c2i = np.zeros(rxMatrix.shape[1])
-        for column in range(rxMatrix.shape[1]):
-            noise = 0
-            for row in range(rxMatrix.shape[0]): 
-                if column == row:
-                    s = rxMatrix[row][column]
-                else:
-                    noise = noise + 10 ** (rxMatrix[row][column] / 10)
         
-            noise = noise + 10**(thermalNoise / 10)
-            noiseDbm = 10 * np.log10(noise)
-            c2i[column] = s - noiseDbm
+        for column in range(N):
+            noise = sum(10**(rxMatrix[row][column]/10) for row in range(N) if row != column)
+            noise += 10**(thermalNoise/10)
+            c2i[column] = rxMatrix[column][column] - 10 * np.log10(noise)
     
         spare = c2i - target_C2I    
         minMax = np.max(spare) - np.min(spare)
         
         if np.min(spare) > 1.0:
-            tail_tx_power = tail_tx_power - 0.8 * np.min(spare)
-        tail_tx_power[np.argmax(spare)] = tail_tx_power[np.argmax(spare)] - 0.5 * minMax
-        tail_tx_power[np.argmin(spare)] = tail_tx_power[np.argmin(spare)] + 0.5 * minMax
-        if tail_tx_power[np.argmin(spare)] > Pmax:
-            tail_tx_power[np.argmin(spare)] = Pmax
+            tail_tx_power -= 0.8 * np.min(spare)
+            
+        tail_tx_power[np.argmax(spare)] -= 0.5 * minMax
+        tail_tx_power[np.argmin(spare)] += 0.5 * minMax
+        tail_tx_power[np.argmin(spare)] = min(tail_tx_power[np.argmin(spare)], Pmax)
         
-        if minMax < 2:
-            counter1 = counter1 - 1
+        if minMax < 2: counter1 -= 1
 
-    tail_tx_power_after_optimization = tail_tx_power
-    tail_c2i_after_optimization = c2i    
+    tail_c2i_after = c2i
+    tail_power_after = tail_tx_power
 
-
-    # ------------------
-    # From Hub to Tail
-    # ------------------
-    hub_tx_power = np.ones(tail_angles.shape) * Pmax 
-
-    rxMatrix = np.zeros(attenMatrixAntenna.shape)
-    for row in range(tail_angles.shape[0]):
-        for column in range(tail_angles.shape[0]):
-            fsl = freeSpaceLoss(tail_distances[column], freq)
+    # --- Hub to Tail Optimization ---
+    hub_tx_power = np.ones(tail_angles.shape) * Pmax
+    for row in range(N):
+        for column in range(N):
+            fsl = freeSpaceLoss(tail_distances[column], antenna1.frequency)
             rxMatrix[row][column] = hub_tx_power[row] + Gain - rain_fade[column] - fsl + Gain + attenMatrixAntenna[row][column]
-            
-    c2i = np.zeros(rxMatrix.shape[1])
-    for column in range(rxMatrix.shape[1]):
-        noise = 0
-        for row in range(rxMatrix.shape[0]): 
-            if column == row:
-                s = rxMatrix[row][column]
-            else:
-                noise = noise + 10 ** (rxMatrix[row][column] / 10)
-        
-        noise = noise + 10**(thermalNoise / 10)
-        noiseDbm = 10 * np.log10(noise)
-        c2i[column] = s - noiseDbm
+
+    for column in range(N):
+        noise = sum(10**(rxMatrix[row][column]/10) for row in range(N) if row != column)
+        noise += 10**(thermalNoise/10)
+        c2i[column] = rxMatrix[column][column] - 10 * np.log10(noise)
     
-    hub_tx_power_before_optimization = hub_tx_power.copy()
-    hub_c2i_before_optimization = c2i.copy()
+    hub_c2i_before = c2i.copy()
+    hub_power_before = hub_tx_power.copy()
 
-    minMax = 1000
-    counter1 = 100
-
-    while minMax > 1 or counter1 > 2: 
-        rxMatrix = np.zeros(attenMatrixAntenna.shape)
-        for row in range(tail_angles.shape[0]):
-            for column in range(tail_angles.shape[0]):
-                fsl = freeSpaceLoss(tail_distances[column], freq)
+    minMax, counter1 = 1000, 100
+    while minMax > 1 or counter1 > 2:
+        for row in range(N):
+            for column in range(N):
+                fsl = freeSpaceLoss(tail_distances[column], antenna1.frequency)
                 rxMatrix[row][column] = hub_tx_power[row] + Gain - rain_fade[column] - fsl + Gain + attenMatrixAntenna[row][column]
-            
-        c2i = np.zeros(rxMatrix.shape[1])
-        for column in range(rxMatrix.shape[1]):
-            noise = 0
-            for row in range(rxMatrix.shape[0]): 
-                if column == row:
-                    s = rxMatrix[row][column]
-                else:
-                    noise = noise + 10 ** (rxMatrix[row][column] / 10)
         
-            noise = noise + 10**(thermalNoise / 10)
-            noiseDbm = 10 * np.log10(noise)
-            c2i[column] = s - noiseDbm
+        for column in range(N):
+            noise = sum(10**(rxMatrix[row][column]/10) for row in range(N) if row != column)
+            noise += 10**(thermalNoise/10)
+            c2i[column] = rxMatrix[column][column] - 10 * np.log10(noise)
     
         spare = c2i - target_C2I    
         minMax = np.max(spare) - np.min(spare)
         
         if np.min(spare) > 1.0:
-            hub_tx_power = hub_tx_power - 0.9 * np.min(spare)
-            
-        hub_tx_power[np.argmax(spare)] = hub_tx_power[np.argmax(spare)] - 0.05 * minMax
-        hub_tx_power[np.argmin(spare)] = hub_tx_power[np.argmin(spare)] + 0.05 * minMax
+            hub_tx_power -= 0.9 * np.min(spare)
+        hub_tx_power[np.argmax(spare)] -= 0.05 * minMax
+        hub_tx_power[np.argmin(spare)] += 0.05 * minMax
+        hub_tx_power[np.argmin(spare)] = min(hub_tx_power[np.argmin(spare)], Pmax)
         
-        if hub_tx_power[np.argmin(spare)] > Pmax:
-            hub_tx_power[np.argmin(spare)] = Pmax
-            
-        if minMax < 2:
-            counter1 = counter1 - 1
+        if minMax < 2: counter1 -= 1
+        
+    hub_c2i_after = c2i
+    hub_power_after = hub_tx_power
 
-    hub_tx_power_after_optimization = hub_tx_power
-    hub_c2i_after_optimization = c2i
-    
-    return (tail_c2i_before_optimization, tail_tx_power_before_optimization, 
-            tail_c2i_after_optimization, tail_tx_power_after_optimization, 
-            hub_c2i_before_optimization, hub_tx_power_before_optimization, 
-            hub_c2i_after_optimization, hub_tx_power_after_optimization)
+    return (tail_c2i_before, tail_power_before, tail_c2i_after, tail_power_after, 
+            hub_c2i_before, hub_power_before, hub_c2i_after, hub_power_after)
 
-# =================
-# Streamlit GUI App
-# =================
+# ==========================================
+# Streamlit App UI
+# ==========================================
 
-st.set_page_config(page_title="PtMP Optimization Tool", layout="wide")
-st.title("Point-to-Multipoint Network Power & C/I Optimization")
-st.markdown("Set network parameters and dynamically allocate randomly placed CPEs to evaluate convergence of Carrier-to-Interference ratios across the sector.")
+st.set_page_config(layout="wide", page_title="PtMP Planning Tool")
+st.title("PtMP Monte Carlo Planning Tool")
 
-# Sidebar parameters
+# Initialize Session State for Coordinates
+if "tail_angles" not in st.session_state:
+    st.session_state.tail_angles = np.array([])
+if "tail_distances" not in st.session_state:
+    st.session_state.tail_distances = np.array([])
+
+# Sidebar Configuration
 st.sidebar.header("System Parameters")
-freq = st.sidebar.number_input("Frequency (GHz)", value=18.0, step=0.5)
+freq = st.sidebar.number_input("Frequency (GHz)", value=18.0, step=1.0)
 antenna_size = st.sidebar.number_input("Antenna Size (ft)", value=3.0, step=0.5)
-chBW = st.sidebar.number_input("Channel BW (MHz)", value=56.0, step=1.0)
-NF = st.sidebar.number_input("Noise Figure (dB)", value=5.0, step=0.5)
+antenna_class = st.sidebar.selectbox("Antenna Class", [3, 4], index=0)
 
-st.sidebar.header("Deployment Limits")
-Pmax = st.sidebar.number_input("Max Tx Power (dBm)", value=20.0, step=1.0)
-Pmin = st.sidebar.number_input("Min Tx Power (dBm)", value=-5.0, step=1.0)
-target_c2i_val = st.sidebar.number_input("Target C/I (dB)", value=35.0, step=1.0)
+col1, col2 = st.sidebar.columns(2)
+Pmax = col1.number_input("Pmax (dBm)", value=20.0)
+Pmin = col2.number_input("Pmin (dBm)", value=-5.0)
 
-st.sidebar.header("Simulation Config")
-num_cpe = st.sidebar.number_input("Number of CPEs", min_value=1, max_value=50, value=6, step=1)
+chBW = st.sidebar.number_input("Channel BW (MHz)", value=56.0)
+NF = st.sidebar.number_input("Noise Figure (dB)", value=5.0)
+target_C2I_val = st.sidebar.number_input("Target C/I (dB)", value=35.0)
 
-if st.sidebar.button("Run Single Simulation", type="primary"):
+st.sidebar.markdown("---")
+st.sidebar.header("Simulation Parameters")
+num_iteration = st.sidebar.number_input("Monte Carlo Iterations", value=1000, step=100)
+view_angle = st.sidebar.number_input("Hub View Angle (Degrees)", value=120.0)
+max_distance = st.sidebar.number_input("Max Distance (km)", value=15.0)
+
+# Main UI Tabs
+tab_random, tab_manual = st.tabs(["Random CPE Placement", "Manual CPE Placement"])
+
+with tab_random:
+    num_cpe = st.number_input("Number of CPEs", value=6, min_value=1, step=1)
+    if st.button("Generate Random Locations"):
+        # Generate angles symmetrically around 0 (e.g., -60 to +60 for a 120 deg sector)
+        st.session_state.tail_angles = np.random.uniform(-view_angle/2, view_angle/2, num_cpe)
+        # Distances from 0.5km to max_distance
+        st.session_state.tail_distances = np.random.uniform(0.5, max_distance, num_cpe)
+
+with tab_manual:
+    st.markdown("Enter comma-separated values for your CPEs.")
+    man_angles_str = st.text_input("Tail Angles (e.g., -117, -68, -25)", "-117, -68, -25")
+    man_dist_str = st.text_input("Tail Distances (km) (e.g., 8.2, 5.1, 2.4)", "8.2, 5.1, 2.4")
     
-    # Generate random parameters for the selected number of CPEs
-    # Angles uniformly distributed in a -180 to 180 sector (modify if specific sector is needed)
-    tail_angles = np.round(np.random.uniform(-180, 180, num_cpe), 1)
-    
-    # Distances between 1km and 15km
-    tail_distances = np.round(np.random.uniform(1.0, 15.0, num_cpe), 2)
-    
-    # Setting rain fade to 0 for a clean single-run view, or can easily swap to random.
-    rain_fade = np.zeros(num_cpe)
-    
-    targetC2I = np.ones(num_cpe) * target_c2i_val
+    if st.button("Set Manual Locations"):
+        try:
+            st.session_state.tail_angles = np.array([float(x.strip()) for x in man_angles_str.split(",")])
+            st.session_state.tail_distances = np.array([float(x.strip()) for x in man_dist_str.split(",")])
+            
+            if len(st.session_state.tail_angles) != len(st.session_state.tail_distances):
+                st.error("Error: The number of angles must match the number of distances.")
+        except ValueError:
+            st.error("Please enter valid numbers.")
 
-    # Setup Antenna
-    antenna1 = Antenna(diameter=antenna_size, frequency=freq, antennaClass=3)
+# Display Current Setup & Graph
+if len(st.session_state.tail_angles) > 0 and len(st.session_state.tail_distances) > 0:
+    st.markdown("### Current Network Layout")
     
-    st.write(f"### Simulation Scenario")
-    st.write(f"**{str(antenna1)}**")
-
-    # Run algorithm
-    results = reuse_app(tail_angles, tail_distances, rain_fade, targetC2I, antenna1, chBW, NF, Pmax, Pmin)
-    (tail_c2i_before, tail_power_before, tail_c2i_after, tail_power_after, 
-     hub_c2i_before, hub_power_before, hub_c2i_after, hub_power_after) = results
-
-    # Data formatting for presentation
-    df_tail = pd.DataFrame({
-        "CPE Node": [f"Tail {i+1}" for i in range(num_cpe)],
-        "Distance (km)": tail_distances,
-        "Angle (deg)": tail_angles,
-        "Before C/I (dB)": np.round(tail_c2i_before, 2),
-        "After C/I (dB)": np.round(tail_c2i_after, 2),
-        "Before Power (dBm)": np.round(tail_power_before, 2),
-        "After Power (dBm)": np.round(tail_power_after, 2)
-    })
+    # Plotting Sector and CPEs
+    fig, ax = plt.subplots(figsize=(6, 6), subplot_kw={'projection': 'polar'})
     
-    df_hub = pd.DataFrame({
-        "CPE Node": [f"Tail {i+1}" for i in range(num_cpe)],
-        "Distance (km)": tail_distances,
-        "Angle (deg)": tail_angles,
-        "Before C/I (dB)": np.round(hub_c2i_before, 2),
-        "After C/I (dB)": np.round(hub_c2i_after, 2),
-        "Before Power (dBm)": np.round(hub_power_before, 2),
-        "After Power (dBm)": np.round(hub_power_after, 2)
-    })
-
-    col1, col2 = st.columns(2)
+    # Setup polar properties based on view angle (pointing "Up" at 90 degrees in Matplotlib)
+    ax.set_theta_zero_location("N")  
+    ax.set_thetamin(-view_angle/2)
+    ax.set_thetamax(view_angle/2)
+    ax.set_ylim(0, max_distance * 1.1)
     
-    with col1:
-        st.subheader("Uplink: Tail to Hub")
-        st.dataframe(df_tail, hide_index=True, use_container_width=True)
+    angles_rad = np.deg2rad(st.session_state.tail_angles)
+    
+    # Plot Hub
+    ax.scatter(0, 0, color='red', marker='^', s=150, label="Hub")
+    # Plot Tails
+    scatter = ax.scatter(angles_rad, st.session_state.tail_distances, c=st.session_state.tail_distances, cmap='viridis', label="CPEs")
+    plt.colorbar(scatter, ax=ax, pad=0.1, label="Distance (km)")
+    
+    # Annotate points
+    for i in range(len(st.session_state.tail_angles)):
+        ax.text(angles_rad[i], st.session_state.tail_distances[i]*1.05, f"CPE {i+1}", fontsize=8)
 
-    with col2:
-        st.subheader("Downlink: Hub to Tail")
-        st.dataframe(df_hub, hide_index=True, use_container_width=True)
+    ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.1))
+    st.pyplot(fig)
+
+    # --- Monte Carlo Execution ---
+    st.markdown("### Run Simulation")
+    if st.button("Run Monte Carlo Optimization"):
+        
+        antenna1 = Antenna(diameter=antenna_size, frequency=freq, antennaClass=antenna_class)
+        targetC2I_array = np.ones(len(st.session_state.tail_angles)) * target_C2I_val
+        
+        tail_c2i_worst = np.zeros(num_iteration)
+        hub_c2i_worst = np.zeros(num_iteration)
+        
+        shape, scale = 1.1, 6.0
+        
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+
+        for index1 in range(num_iteration):
+            # Rain fade generation
+            rain_fade = np.random.gamma(shape, scale, len(st.session_state.tail_angles))
+            rain_fade = np.clip(rain_fade, 0, 25)
+            
+            res = reuse_app(
+                st.session_state.tail_angles, 
+                st.session_state.tail_distances, 
+                rain_fade, 
+                targetC2I_array, 
+                antenna1, 
+                chBW, NF, Pmax, Pmin
+            )
+            
+            tail_c2i_after = res[2]
+            hub_c2i_after = res[6]
+            
+            tail_c2i_worst[index1] = np.min(tail_c2i_after)
+            hub_c2i_worst[index1] = np.min(hub_c2i_after)
+            
+            if index1 % 10 == 0:
+                progress_bar.progress(index1 / num_iteration)
+                status_text.text(f"Running iteration {index1}/{num_iteration}...")
+
+        progress_bar.progress(1.0)
+        status_text.text("Simulation Complete!")
+
+        # Results Plotting
+        st.markdown("### Worst Case Minimum C/I Distributions")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            fig1, ax1 = plt.subplots()
+            ax1.hist(tail_c2i_worst, bins=50, density=True, alpha=0.7, color='blue')
+            ax1.set_title("Tail to Hub (Uplink) C/I")
+            ax1.set_xlabel("C/I [dB]")
+            ax1.grid(True)
+            st.pyplot(fig1)
+            
+        with col2:
+            fig2, ax2 = plt.subplots()
+            ax2.hist(hub_c2i_worst, bins=50, density=True, alpha=0.7, color='green')
+            ax2.set_title("Hub to Tail (Downlink) C/I")
+            ax2.set_xlabel("C/I [dB]")
+            ax2.grid(True)
+            st.pyplot(fig2)
 else:
-    st.info("Adjust parameters in the sidebar and click **Run Single Simulation** to begin.")
+    st.info("Please generate random locations or input manual coordinates to view the network layout and run simulations.")
